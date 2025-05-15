@@ -1,5 +1,7 @@
 using BlazorWAemail.Server.Models;
+using BlazorWAemail.Server.Services;
 using Microsoft.EntityFrameworkCore;
+using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -11,6 +13,29 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+
+// Add AppSettingsService
+builder.Services.AddScoped<AppSettingsService>();
+
+// Load app settings from the database
+var serviceProvider = builder.Services.BuildServiceProvider();
+var appSettingsService = serviceProvider.GetRequiredService<AppSettingsService>();
+var appSettings = appSettingsService.GetAppSettingsAsync().Result;
+
+var secretKey = appSettings["JwtSecretKey"];
+var gptKey = appSettings["GptKey"];
+var issuer = appSettings["JwtIssuer"];
+var audience = appSettings["JwtAudience"];
+var smtpServer = appSettings["SmtpServer"];
+var smtpPort = int.Parse(appSettings["SmtpPort"]);
+var smtpUser = appSettings["SmtpUser"];
+var smtpPass = appSettings["SmtpPass"];
+var key = Encoding.UTF8.GetBytes(secretKey);
+var tokenExpirationDays = int.Parse(appSettings["TokenExpirationDays"]);
+var AZURE_OPENAI_ENDPOINT = appSettings["AZURE_OPENAI_ENDPOINT"];
+var AZURE_OPENAI_API_KEY = appSettings["AZURE_OPENAI_API_KEY"];
+
 
 var app = builder.Build();
 
