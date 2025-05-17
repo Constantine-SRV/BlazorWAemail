@@ -2,6 +2,7 @@ using BlazorWAemail.Server.Models;
 using BlazorWAemail.Server.Services;
 using Microsoft.EntityFrameworkCore;
 using System.Text;
+//using Microsoft.AspNetCore.Components.WebAssembly.Server;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -22,6 +23,7 @@ builder.Services.AddScoped<AppSettingsService>();
 var serviceProvider = builder.Services.BuildServiceProvider();
 var appSettingsService = serviceProvider.GetRequiredService<AppSettingsService>();
 var appSettings = appSettingsService.GetAppSettingsAsync().Result;
+builder.Services.AddSingleton<IDictionary<string, string>>(appSettings);
 
 var secretKey = appSettings["JwtSecretKey"];
 var gptKey = appSettings["GptKey"];
@@ -36,6 +38,7 @@ var tokenExpirationDays = int.Parse(appSettings["TokenExpirationDays"]);
 var AZURE_OPENAI_ENDPOINT = appSettings["AZURE_OPENAI_ENDPOINT"];
 var AZURE_OPENAI_API_KEY = appSettings["AZURE_OPENAI_API_KEY"];
 
+builder.Services.AddScoped<IEmailSender, GraphEmailSender>();
 
 var app = builder.Build();
 
@@ -49,5 +52,7 @@ if (app.Environment.IsDevelopment())
 app.UseAuthorization();
 
 app.MapControllers();
-
+app.UseBlazorFrameworkFiles();
+app.UseStaticFiles();
+app.MapFallbackToFile("index.html");
 app.Run();

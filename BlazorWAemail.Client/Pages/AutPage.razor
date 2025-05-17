@@ -1,0 +1,90 @@
+﻿@page "/aut"
+@inject AuthService AuthService
+@using System.ComponentModel.DataAnnotations
+
+<h3>Email login</h3>
+
+@if (!isCodeSent)
+{
+    <EditForm Model="emailModel" OnValidSubmit="SendCodeAsync">
+        <DataAnnotationsValidator />
+        <ValidationSummary />
+
+        <div>
+            <label>Email:</label>
+            <InputText @bind-Value="emailModel.Email" class="form-control" />
+        </div>
+        <button type="submit" class="btn btn-primary mt-2">Send code</button>
+    </EditForm>
+    @if (!string.IsNullOrEmpty(message))
+    {
+        <div class="alert alert-info mt-2">@message</div>
+    }
+}
+else
+{
+    <EditForm Model="codeModel" OnValidSubmit="VerifyCodeAsync">
+        <DataAnnotationsValidator />
+        <ValidationSummary />
+
+        <div>
+            <label>Enter code:</label>
+            <InputText @bind-Value="codeModel.Code" class="form-control" />
+        </div>
+        <button type="submit" class="btn btn-success mt-2">Sign in</button>
+    </EditForm>
+    @if (!string.IsNullOrEmpty(message))
+    {
+        <div class="alert alert-info mt-2">@message</div>
+    }
+}
+
+@code {
+    private EmailModel emailModel = new();
+    private CodeModel codeModel = new();
+    private string? message;
+    private bool isCodeSent = false;
+
+    private class EmailModel
+    {
+        [Required]
+        [EmailAddress]
+        public string Email { get; set; } = "";
+    }
+
+    private class CodeModel
+    {
+        [Required]
+        public string Code { get; set; } = "";
+    }
+
+    private async Task SendCodeAsync()
+    {
+        message = null;
+        var result = await AuthService.SendCodeAsync(emailModel.Email);
+        if (result)
+        {
+            message = "Verification code sent to your email.";
+            isCodeSent = true;
+        }
+        else
+        {
+            message = "Failed to send code. Please try again.";
+        }
+    }
+
+    private async Task VerifyCodeAsync()
+    {
+        message = null;
+        var authResult = await AuthService.VerifyCodeAsync(emailModel.Email, codeModel.Code);
+        if (authResult != null)
+        {
+            message = $"Sign in success. Welcome, {authResult.Email}";
+            // Тут можно добавить редирект на защищённую страницу или обновить AuthState
+        }
+        else
+        {
+            message = "Incorrect code or code expired.";
+        }
+    }
+}
