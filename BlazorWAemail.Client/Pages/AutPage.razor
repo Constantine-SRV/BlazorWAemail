@@ -10,6 +10,7 @@
 @inject AuthenticationStateProvider AuthStateProvider
 @inject GetUserRolesService GetUserRolesService
 
+
 <h3>Sign in</h3>
 
 @if (isLoading)
@@ -87,7 +88,7 @@ private async Task RefreshAuthStateAsync()
     {
         try
         {
-            userRoles = await GetUserRolesService.GetUserRoles();
+           userRoles = await GetUserRolesService.GetRolesAsync();
         }
         catch (Exception ex)
         {
@@ -142,33 +143,13 @@ private async Task RefreshAuthStateAsync()
         }
     }
 
-private async Task LogoutAllDevices()
-{
-    try
-    {
-        await AuthService.LogoutAllDevicesAsync();
-        message = "All devices logged off.";
-    }
-    catch (HttpRequestException ex)
-    {
-        // покажем реальный статус/сообщение сервера
-        message = $"Failed to log off all devices: {ex.Message}";
-    }
+    private async Task LogoutAllDevices() =>
+        await AuthService.FullLogoutAllDevicesAsync(AuthStateProvider)
+                         .ContinueWith(_ => Navigation.NavigateTo("/", true));
 
-    await JS.InvokeVoidAsync("localStorage.removeItem", "authToken");
-    if (AuthStateProvider is CustomAuthenticationStateProvider custom)
-        await custom.MarkUserAsLoggedOut();
-
-    Navigation.NavigateTo("/", true);
-}
-
-    private async Task LogoutThisDevice()
-    {
-        await JS.InvokeVoidAsync("localStorage.removeItem", "authToken");
-        if (AuthStateProvider is CustomAuthenticationStateProvider customProvider)
-            await customProvider.MarkUserAsLoggedOut();
-        Navigation.NavigateTo("/", true);
-    }
+    private async Task LogoutThisDevice() =>
+        await AuthService.LocalLogoutAsync(AuthStateProvider)
+                         .ContinueWith(_ => Navigation.NavigateTo("/", true));
 
     public class EmailModel
     {

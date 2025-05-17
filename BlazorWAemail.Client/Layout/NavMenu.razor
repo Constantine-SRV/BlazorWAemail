@@ -1,39 +1,69 @@
-﻿<div class="top-row ps-3 navbar navbar-dark">
-    <div class="container-fluid">
-        <a class="navbar-brand" href="">BlazorWAemail.Client</a>
-        <button title="Navigation menu" class="navbar-toggler" @onclick="ToggleNavMenu">
-            <span class="navbar-toggler-icon"></span>
-        </button>
-    </div>
+﻿@using Microsoft.AspNetCore.Components.Authorization
+@using BlazorWAemail.Client.Services
+@inject AuthenticationStateProvider AuthState
+@inject GetUserRolesService RoleService
+
+<div class="top-row ps-3 navbar navbar-dark">
+    ...
 </div>
 
-<div class="@NavMenuCssClass nav-scrollable" @onclick="ToggleNavMenu">
-    <nav class="flex-column">
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
-                <span class="bi bi-house-door-fill-nav-menu" aria-hidden="true"></span> Home
-            </NavLink>
+<AuthorizeView>
+    <Authorized>
+        <div class="@NavMenuCssClass nav-scrollable" @onclick="ToggleNavMenu">
+            <nav class="flex-column">
+
+                    <div class="nav-item px-3">
+                        <NavLink class="nav-link" href="">
+                            <span class="bi bi-house-door-fill-nav-menu"></span> Home
+                        </NavLink>
+                    </div>
+                
+
+                @if (IsUser || IsAdmin)
+                {
+                    <div class="nav-item px-3">
+                        <NavLink class="nav-link" href="chat">
+                            <span class="bi bi-chat-right-text-nav-menu"></span> Chat
+                        </NavLink>
+                    </div>
+                    <div class="nav-item px-3">
+                        <NavLink class="nav-link" href="chatazure">
+                            <span class="bi bi-cloud-nav-menu"></span> Chat&nbsp;Azure
+                        </NavLink>
+                    </div>
+                }
+
+                @if (IsAdmin)
+                {
+                    <div class="nav-item px-3">
+                        <NavLink class="nav-link" href="logins-history">
+                            <span class="bi bi-clock-history-nav-menu"></span> Logins&nbsp;History
+                        </NavLink>
+                    </div>
+                    <div class="nav-item px-3">
+                        <NavLink class="nav-link" href="user-roles">
+                            <span class="bi bi-people-nav-menu"></span> User&nbsp;Roles
+                        </NavLink>
+                    </div>
+                }
+            </nav>
         </div>
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="counter">
-                <span class="bi bi-plus-square-fill-nav-menu" aria-hidden="true"></span> Counter
-            </NavLink>
-        </div>
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="weather">
-                <span class="bi bi-list-nested-nav-menu" aria-hidden="true"></span> Weather
-            </NavLink>
-        </div>
-    </nav>
-</div>
+    </Authorized>
+</AuthorizeView>
 
 @code {
     private bool collapseNavMenu = true;
+    private bool IsGuest, IsUser, IsAdmin;
 
     private string? NavMenuCssClass => collapseNavMenu ? "collapse" : null;
+    private void ToggleNavMenu() => collapseNavMenu = !collapseNavMenu;
 
-    private void ToggleNavMenu()
+    protected override async Task OnInitializedAsync()
     {
-        collapseNavMenu = !collapseNavMenu;
+        var roles = await RoleService.GetRolesAsync();
+
+        IsAdmin = roles.Contains("Admin", StringComparer.OrdinalIgnoreCase);
+        IsUser  = roles.Contains("User",  StringComparer.OrdinalIgnoreCase) || IsAdmin;
+        IsGuest = !IsUser && !IsAdmin;
     }
 }

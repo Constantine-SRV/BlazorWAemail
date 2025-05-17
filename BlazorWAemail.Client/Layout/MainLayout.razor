@@ -1,16 +1,70 @@
-﻿@inherits LayoutComponentBase
+﻿@namespace BlazorWAemail.Client.Layout
+@inherits LayoutComponentBase
+@using BlazorWAemail.Client.Services
+@using Microsoft.AspNetCore.Components
+@using Microsoft.AspNetCore.Components.Authorization
+@using System.Security.Claims
+@inject AuthenticationStateProvider AuthState
+@inject NavigationManager          Nav
+@inject AuthService                AuthSvc
+@inject IJSRuntime                 JS
+
 <div class="page">
-    <div class="sidebar">
-        <NavMenu />
-    </div>
+    <AuthorizeView>
+        <Authorized Context="auth">
+            <div class="sidebar">
+                <NavMenu />
+            </div>
 
-    <main>
-        <div class="top-row px-4">
-            <a href="https://learn.microsoft.com/aspnet/core/" target="_blank">About</a>
-        </div>
+            <main>
+                <div class="top-row px-4">
+                    <span>
+                        Address: @Nav.Uri&nbsp;&nbsp;
+                        User: @GetEmail(auth.User)
+                        |
+                        <a href="javascript:void(0)" @onclick="LogoutThisDevice">Logout</a> |
+                        <a href="javascript:void(0)" @onclick="LogoutAllDevices">Logout&nbsp;All</a>
+                    </span>
+                </div>
 
-        <article class="content px-4">
-            @Body
-        </article>
-    </main>
+                <article class="content px-4">
+                    @Body
+                </article>
+            </main>
+        </Authorized>
+
+        <NotAuthorized>
+            @if (!Nav.Uri.EndsWith("/AutPage", StringComparison.OrdinalIgnoreCase))
+            {
+                Nav.NavigateTo("/AutPage", forceLoad: true);
+            }
+
+            <main>
+                <div class="top-row px-4">
+                    <span>Address: @Nav.Uri&nbsp;&nbsp;Please login</span>
+                </div>
+
+                <article class="content px-4">
+                    @Body
+                </article>
+            </main>
+        </NotAuthorized>
+    </AuthorizeView>
 </div>
+
+@code
+{
+    private static string GetEmail(ClaimsPrincipal user) =>
+        user.Identity?.Name
+        ?? user.Claims.FirstOrDefault(c =>
+               c.Type == ClaimTypes.Email || c.Type == "email")?.Value
+        ?? "Unknown";
+
+private async Task LogoutThisDevice() =>
+    await AuthSvc.LocalLogoutAsync(AuthState)
+                 .ContinueWith(_ => Nav.NavigateTo("/AutPage", true));
+
+private async Task LogoutAllDevices() =>
+    await AuthSvc.FullLogoutAllDevicesAsync(AuthState)
+                 .ContinueWith(_ => Nav.NavigateTo("/AutPage", true));
+}

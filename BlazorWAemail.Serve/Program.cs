@@ -1,69 +1,73 @@
-﻿using BlazorWAemail.Serve.Services;
+﻿using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
 using BlazorWAemail.Server.Models;
 using BlazorWAemail.Server.Services;
-using Microsoft.EntityFrameworkCore;
+using BlazorWAemail.Serve.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
-using System.Text;
-using System.IdentityModel.Tokens.Jwt;
-using System.Security.Claims;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
+/* ---------- infrastructure ---------- */
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-builder.Services.AddDbContext<ApplicationDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+builder.Services.AddDbContext<ApplicationDbContext>(opt =>
+    opt.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-// Add AppSettingsService
+/* ---------- settings from DB ---------- */
 builder.Services.AddScoped<AppSettingsService>();
+await using (var tmpScope = builder.Services.BuildServiceProvider().CreateAsyncScope())
+{
+    var cfg = await tmpScope.ServiceProvider
+                            .GetRequiredService<AppSettingsService>()
+                            .GetAppSettingsAsync();
+    builder.Services.AddSingleton<IDictionary<string, string>>(cfg);
+}
 
-// Load app settings from the database (sync for setup, not recommended in production, but OK for setup)
-var serviceProvider = builder.Services.BuildServiceProvider();
-var appSettingsService = serviceProvider.GetRequiredService<AppSettingsService>();
-var appSettings = appSettingsService.GetAppSettingsAsync().Result;
-builder.Services.AddSingleton<IDictionary<string, string>>(appSettings);
-
-// JWT setup
-var secretKey = appSettings["JwtSecretKey"];
-var issuer = appSettings["JwtIssuer"];
-var audience = appSettings["JwtAudience"];
-var key = Encoding.UTF8.GetBytes(secretKey);
-
-// Authentication & Authorization
+/* ---------- auth / JWT ---------- */
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
+    .AddJwtBearer(opt =>
     {
-        options.TokenValidationParameters = new TokenValidationParameters
+        var cfg = opt.EventsType = typeof(BearerEvents);        
+        var sp = builder.Services.BuildServiceProvider();
+        var set = sp.GetRequiredService<IDictionary<string, string>>();
+
+        opt.TokenValidationParameters = new TokenValidationParameters
         {
-            ValidateIssuer = true,
-            ValidIssuer = issuer,
-            ValidateAudience = true,
-            ValidAudience = audience,
-            ValidateLifetime = true,
+            ValidateIssuer           = true,
+            ValidateAudience         = true,
+            ValidateLifetime         = true,
             ValidateIssuerSigningKey = true,
-            IssuerSigningKey = new SymmetricSecurityKey(key),
-            NameClaimType = ClaimTypes.Email
+
+            ValidIssuer    = set["JwtIssuer"],
+            ValidAudience  = set["JwtAudience"],
+            IssuerSigningKey = new SymmetricSecurityKey(
+                                   Encoding.UTF8.GetBytes(set["JwtSecretKey"])),
+
+            NameClaimType  = ClaimTypes.Email               // User.Identity.Name == email
         };
-     });
+    });
 
+
+builder.Services.AddScoped<BearerEvents>();
+
+/* ---------- DI ---------- */
 builder.Services.AddAuthorization();
-
 builder.Services.AddScoped<IEmailSender, GraphEmailSender>();
 builder.Services.AddScoped<IUserRolesService, UserRolesService>();
 
+/* ---------- pipeline ---------- */
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
-// ВАЖНО: Authentication раньше Authorization!
 app.UseAuthentication();
 app.UseAuthorization();
 
@@ -72,3 +76,33 @@ app.UseBlazorFrameworkFiles();
 app.UseStaticFiles();
 app.MapFallbackToFile("index.html");
 app.Run();
+
+/* =======================================================================
+ * JwtBearerEvents  –  check DB
+ * =====================================================================*/
+public sealed class BearerEvents : JwtBearerEvents
+{
+    private readonly ApplicationDbContext _db;
+    public BearerEvents(ApplicationDbContext db) => _db = db;
+
+    public override async Task TokenValidated(TokenValidatedContext ctx)
+    {
+        // "Bearer xxxxx.yyyyy.zzzzz"
+        var header = ctx.Request.Headers["Authorization"].ToString();
+
+        
+        if (!header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+        {
+            ctx.Fail("No bearer token");
+            return;
+        }
+
+        var encoded = header["Bearer ".Length..];  
+
+        
+        var alive = await _db.UserTokens.AnyAsync(t => t.Token == encoded);
+
+        if (!alive)
+            ctx.Fail("Token revoked");
+    }
+}

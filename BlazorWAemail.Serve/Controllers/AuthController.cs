@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
@@ -7,7 +8,6 @@ using Microsoft.IdentityModel.Tokens;
 using BlazorWAemail.Server.Models;
 using BlazorWAemail.Server.Services;
 using BlazorWAemail.Shared;
-using Microsoft.AspNetCore.Authorization;
 
 namespace BlazorWAemail.Server.Controllers;
 
@@ -16,169 +16,102 @@ namespace BlazorWAemail.Server.Controllers;
 public class AuthController : ControllerBase
 {
     private readonly ApplicationDbContext _db;
-    private readonly IEmailSender _emailSender;
-    private readonly IDictionary<string, string> _appSettings;
+    private readonly IEmailSender _mail;
+    private readonly IDictionary<string, string> _cfg;
 
-    public AuthController(
-        ApplicationDbContext db,
-        IEmailSender emailSender,
-        IDictionary<string, string> appSettings)
+    public AuthController(ApplicationDbContext db,
+                          IEmailSender mail,
+                          IDictionary<string, string> cfg)
     {
-        _db = db;
-        _emailSender = emailSender;
-        _appSettings = appSettings;
+        _db  = db;
+        _mail= mail;
+        _cfg = cfg;
     }
 
+    /* ---------- 1. e-mail → code --------------------------------------- */
     [HttpPost("sendcode")]
-    public async Task<IActionResult> SendCode([FromBody] SendCodeRequest request)
+    public async Task<IActionResult> SendCode([FromBody] SendCodeRequest r)
     {
-        if (string.IsNullOrWhiteSpace(request.Email))
-            return BadRequest("Email is required.");
+        if (string.IsNullOrWhiteSpace(r.Email))
+            return BadRequest("Email required");
 
-        var code = new Random().Next(100000, 999999).ToString();
-        var expiration = DateTime.UtcNow.AddMinutes(10);
+        var code = Random.Shared.Next(100_000, 999_999).ToString();
+        var row = await _db.AuthCodes.FirstOrDefaultAsync(a => a.Email == r.Email);
 
-        // Сохраняем или обновляем код
-        var existing = await _db.AuthCodes.FirstOrDefaultAsync(x => x.Email == request.Email);
-        if (existing == null)
-        {
-            _db.AuthCodes.Add(new AuthCode { Email = request.Email, Code = code, Expiration = expiration });
-        }
+        if (row is null)
+            _db.AuthCodes.Add(new AuthCode
+            {
+                Email = r.Email,
+                Code = code,
+                Expiration = DateTime.UtcNow.AddMinutes(10)
+            });
         else
         {
-            existing.Code = code;
-            existing.Expiration = expiration;
+            row.Code       = code;
+            row.Expiration = DateTime.UtcNow.AddMinutes(10);
         }
-
         await _db.SaveChangesAsync();
 
-        try
-        {
-            await _emailSender.SendEmailAsync(
-                request.Email,
-                "Код подтверждения входа",
-                $"Ваш код: {code}"
-            );
-            Console.WriteLine($"code: {code}");
-        }
-        catch (Exception ex)
-        {
-            return StatusCode(500, "Ошибка при отправке e-mail: " + ex.Message);
-        }
-
+        await _mail.SendEmailAsync(r.Email, "Login code", $"Your code: {code}");
+        Console.WriteLine($"code: {code}");
         return Ok();
     }
+
+    /* ---------- 2. code+ JWT ------------------------------------------ */
     [HttpPost("verifycode")]
-    public async Task<ActionResult<AuthResult>> VerifyCode([FromBody] VerifyCodeRequest request)
+    public async Task<ActionResult<AuthResult>> Verify([FromBody] VerifyCodeRequest r)
     {
-        Console.WriteLine("VerifyCode called");
-        Console.WriteLine($"Email: {request.Email}, Code: {request.Code}");
-
-        if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.Code))
-        {
-            Console.WriteLine("Fail: Email or code is empty");
-            return BadRequest("Email and code required.");
-        }
-
-        var codeRecord = await _db.AuthCodes.FirstOrDefaultAsync(x => x.Email == request.Email);
-
-        if (codeRecord == null)
-        {
-            Console.WriteLine("Fail: Code record not found for this email");
+        var row = await _db.AuthCodes.FirstOrDefaultAsync(a => a.Email == r.Email);
+        if (row is null || row.Code != r.Code || row.Expiration < DateTime.UtcNow)
             return Unauthorized();
-        }
 
-        if (codeRecord.Code != request.Code)
+        var user = await _db.Users.SingleOrDefaultAsync(u => u.Email == r.Email)
+                   ?? (await _db.Users.AddAsync(new User { Email = r.Email })).Entity;
+
+        /* --- issue token */
+        var creds = new SigningCredentials(
+                         new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_cfg["JwtSecretKey"])),
+                         SecurityAlgorithms.HmacSha256);
+
+        var jwt = new JwtSecurityToken(
+            issuer: _cfg["JwtIssuer"],
+            audience: _cfg["JwtAudience"],
+            claims: new[] {
+                new Claim(JwtRegisteredClaimNames.Sub,   user.Email),
+                new Claim(JwtRegisteredClaimNames.Email, user.Email),
+                new Claim(ClaimTypes.NameIdentifier,     user.Id.ToString())
+            },
+            expires: DateTime.UtcNow.AddDays(int.Parse(_cfg["TokenExpirationDays"])),
+            signingCredentials: creds);
+
+        var encoded = new JwtSecurityTokenHandler().WriteToken(jwt);
+
+        _db.UserTokens.Add(new UserToken
         {
-            Console.WriteLine($"Fail: Code does not match (expected: {codeRecord.Code}, actual: {request.Code})");
-            return Unauthorized();
-        }
+            UserId = user.Id,
+            Token  = encoded,
+            CreatedAt  = DateTime.UtcNow,
+            Expiration = jwt.ValidTo
+        });
+        await _db.SaveChangesAsync();
 
-        if (codeRecord.Expiration < DateTime.UtcNow)
-        {
-            Console.WriteLine($"Fail: Code expired at {codeRecord.Expiration}, now {DateTime.UtcNow}");
-            return Unauthorized();
-        }
-
-        // Try to find user by email
-        var user = await _db.Users
-            .Include(u => u.Tokens)
-            .Include(u => u.UserRoles)
-            .FirstOrDefaultAsync(x => x.Email == request.Email);
-
-        if (user == null)
-        {
-            Console.WriteLine("User not found, creating new user");
-            user = new User
-            {
-                Email = request.Email,
-                Tokens = new List<UserToken>(),
-                UserRoles = new List<UserRole>()
-            };
-            _db.Users.Add(user);
-            await _db.SaveChangesAsync();
-        }
-        else
-        {
-            Console.WriteLine($"User found: Id={user.Id}, Email={user.Email}");
-        }
-
-        // JWT settings from appSettings
-        var secretKey = _appSettings["JwtSecretKey"];
-        var issuer = _appSettings["JwtIssuer"];
-        var audience = _appSettings["JwtAudience"];
-        var tokenExpirationDays = int.Parse(_appSettings["TokenExpirationDays"]);
-        var key = Encoding.UTF8.GetBytes(secretKey);
-
-        var creds = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256);
-
-        var claims = new List<Claim>
-        {
-            new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
-            new Claim(ClaimTypes.Email, user.Email),
-            new Claim(JwtRegisteredClaimNames.Sub, user.Email),
-            new Claim(JwtRegisteredClaimNames.Email, user.Email)
-        };
-
-
-        var token = new JwtSecurityToken(
-            issuer: issuer,
-            audience: audience,
-            claims: claims,
-            expires: DateTime.UtcNow.AddDays(tokenExpirationDays),
-            signingCredentials: creds
-        );
-
-        var jwt = new JwtSecurityTokenHandler().WriteToken(token);
-
-        Console.WriteLine($"Success: Token generated for {user.Email}");
-
-        return new AuthResult
-        {
-            Token = jwt,
-            Email = user.Email
-        };
+        return new AuthResult { Email = user.Email, Token = encoded };
     }
 
+    /* ---------- 3. global logout -------------------------------------- */
     [Authorize]
     [HttpPost("logoutall")]
-    public async Task<IActionResult> LogoutAllDevices()
+    public async Task<IActionResult> LogoutAll()
     {
         var email = User.Identity?.Name;
-        if (string.IsNullOrWhiteSpace(email))
-            return Forbid();
+        if (email is null) return Forbid();
 
-        var user = await _db.Users
-            .Include(u => u.Tokens)
-            .SingleOrDefaultAsync(u => u.Email == email);
-
-        if (user == null) return NotFound();
+        var user = await _db.Users.Include(u => u.Tokens)
+                                  .SingleOrDefaultAsync(u => u.Email == email);
+        if (user is null) return NotFound();
 
         _db.UserTokens.RemoveRange(user.Tokens);
         await _db.SaveChangesAsync();
-
         return Ok();
     }
-
-
 }

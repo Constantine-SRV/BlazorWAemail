@@ -4,7 +4,7 @@ using Blazored.LocalStorage;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
-using System.Net.Http;
+using Microsoft.JSInterop;
 
 var builder = WebAssemblyHostBuilder.CreateDefault(args);
 
@@ -12,36 +12,44 @@ var builder = WebAssemblyHostBuilder.CreateDefault(args);
 builder.RootComponents.Add<App>("#app");
 builder.RootComponents.Add<HeadOutlet>("head::after");
 
-// local-storage for persisting the JWT
+// local storage (JWT)
 builder.Services.AddBlazoredLocalStorage();
 
-// handler that adds the JWT from localStorage to every outgoing request
+// handler that adds JWT to each request
 builder.Services.AddScoped<ApiAuthorizationMessageHandler>();
 
-// single HttpClient for all API calls (points to the server)
-builder.Services.AddHttpClient("ApiClient", client =>
+// single HttpClient for API
+builder.Services.AddHttpClient("ApiClient", c =>
 {
-    client.BaseAddress = new Uri("http://localhost:5005/");
+    c.BaseAddress = new Uri("http://localhost:5005/");
 })
 .AddHttpMessageHandler<ApiAuthorizationMessageHandler>();
 
-// services that rely on ApiClient
+// ----------------- application services -----------------
+
+// AuthService (scoped)
 builder.Services.AddScoped<AuthService>(sp =>
 {
-    var factory = sp.GetRequiredService<IHttpClientFactory>();
-    var apiClient = factory.CreateClient("ApiClient");
-    var storage = sp.GetRequiredService<Blazored.LocalStorage.ILocalStorageService>();
-    return new AuthService(apiClient, storage);
-});
-builder.Services.AddScoped<GetUserRolesService>(sp =>
-{
-    var factory = sp.GetRequiredService<IHttpClientFactory>();
-    var apiClient = factory.CreateClient("ApiClient");
-    return new GetUserRolesService(apiClient);
+    var http = sp.GetRequiredService<IHttpClientFactory>().CreateClient("ApiClient");
+    var store = sp.GetRequiredService<ILocalStorageService>();
+    var js = sp.GetRequiredService<IJSRuntime>();
+
+    return new AuthService(http, store, js);
 });
 
-// Blazor auth setup
+// GetUserRolesService (scoped – кеш сидит в localStorage, не в RAM)
+builder.Services.AddScoped<GetUserRolesService>(sp =>
+{
+    var http = sp.GetRequiredService<IHttpClientFactory>().CreateClient("ApiClient");
+    var storage = sp.GetRequiredService<ILocalStorageService>();
+    var auth = sp.GetRequiredService<AuthService>();
+    var authState = sp.GetRequiredService<AuthenticationStateProvider>();
+
+    return new GetUserRolesService(http, storage, auth, authState);
+});
+// blazor auth plumbing
 builder.Services.AddAuthorizationCore();
-builder.Services.AddScoped<AuthenticationStateProvider, CustomAuthenticationStateProvider>();
+builder.Services.AddScoped<AuthenticationStateProvider,
+                            CustomAuthenticationStateProvider>();
 
 await builder.Build().RunAsync();
