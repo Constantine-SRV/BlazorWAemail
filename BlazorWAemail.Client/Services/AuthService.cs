@@ -41,4 +41,9 @@ public class AuthService
     {
         return await _localStorage.GetItemAsync<string>("authToken");
     }
+    public async Task LogoutAllDevicesAsync()
+    {
+        await _http.PostAsync("api/auth/logoutall", null); 
+    }
+
 }

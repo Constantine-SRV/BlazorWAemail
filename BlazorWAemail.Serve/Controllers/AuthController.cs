@@ -7,6 +7,7 @@ using Microsoft.IdentityModel.Tokens;
 using BlazorWAemail.Server.Models;
 using BlazorWAemail.Server.Services;
 using BlazorWAemail.Shared;
+using Microsoft.AspNetCore.Authorization;
 
 namespace BlazorWAemail.Server.Controllers;
 
@@ -132,10 +133,13 @@ public class AuthController : ControllerBase
         var creds = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256);
 
         var claims = new List<Claim>
-    {
-        new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
-        new Claim(ClaimTypes.Email, user.Email),
-    };
+        {
+            new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
+            new Claim(ClaimTypes.Email, user.Email),
+            new Claim(JwtRegisteredClaimNames.Sub, user.Email),
+            new Claim(JwtRegisteredClaimNames.Email, user.Email)
+        };
+
 
         var token = new JwtSecurityToken(
             issuer: issuer,
@@ -155,5 +159,26 @@ public class AuthController : ControllerBase
             Email = user.Email
         };
     }
+
+    [Authorize]
+    [HttpPost("logoutall")]
+    public async Task<IActionResult> LogoutAllDevices()
+    {
+        var email = User.Identity?.Name;
+        if (string.IsNullOrWhiteSpace(email))
+            return Forbid();
+
+        var user = await _db.Users
+            .Include(u => u.Tokens)
+            .SingleOrDefaultAsync(u => u.Email == email);
+
+        if (user == null) return NotFound();
+
+        _db.UserTokens.RemoveRange(user.Tokens);
+        await _db.SaveChangesAsync();
+
+        return Ok();
+    }
+
 
 }

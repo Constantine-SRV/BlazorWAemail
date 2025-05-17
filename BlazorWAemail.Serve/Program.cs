@@ -1,44 +1,58 @@
+﻿using BlazorWAemail.Serve.Services;
 using BlazorWAemail.Server.Models;
 using BlazorWAemail.Server.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.IdentityModel.Tokens;
 using System.Text;
-//using Microsoft.AspNetCore.Components.WebAssembly.Server;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
-
 builder.Services.AddControllers();
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-
 // Add AppSettingsService
 builder.Services.AddScoped<AppSettingsService>();
 
-// Load app settings from the database
+// Load app settings from the database (sync for setup, not recommended in production, but OK for setup)
 var serviceProvider = builder.Services.BuildServiceProvider();
 var appSettingsService = serviceProvider.GetRequiredService<AppSettingsService>();
 var appSettings = appSettingsService.GetAppSettingsAsync().Result;
 builder.Services.AddSingleton<IDictionary<string, string>>(appSettings);
 
+// JWT setup
 var secretKey = appSettings["JwtSecretKey"];
-var gptKey = appSettings["GptKey"];
 var issuer = appSettings["JwtIssuer"];
 var audience = appSettings["JwtAudience"];
-var smtpServer = appSettings["SmtpServer"];
-var smtpPort = int.Parse(appSettings["SmtpPort"]);
-var smtpUser = appSettings["SmtpUser"];
-var smtpPass = appSettings["SmtpPass"];
 var key = Encoding.UTF8.GetBytes(secretKey);
-var tokenExpirationDays = int.Parse(appSettings["TokenExpirationDays"]);
-var AZURE_OPENAI_ENDPOINT = appSettings["AZURE_OPENAI_ENDPOINT"];
-var AZURE_OPENAI_API_KEY = appSettings["AZURE_OPENAI_API_KEY"];
+
+// Authentication & Authorization
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = issuer,
+            ValidateAudience = true,
+            ValidAudience = audience,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(key),
+            NameClaimType = ClaimTypes.Email
+        };
+     });
+
+builder.Services.AddAuthorization();
 
 builder.Services.AddScoped<IEmailSender, GraphEmailSender>();
+builder.Services.AddScoped<IUserRolesService, UserRolesService>();
 
 var app = builder.Build();
 
@@ -49,6 +63,8 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+// ВАЖНО: Authentication раньше Authorization!
+app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();

@@ -1,62 +1,103 @@
-﻿@page "/aut"
+﻿@page "/AutPage"
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Components.Authorization
+@using BlazorWAemail.Client.Services
+
+@inject AuthenticationStateProvider AuthStateProvider
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
 @inject AuthService AuthService
-@using System.ComponentModel.DataAnnotations
+@inject AuthenticationStateProvider AuthStateProvider
+@inject GetUserRolesService GetUserRolesService
 
-<h3>Email login</h3>
+<h3>Sign in</h3>
 
-@if (!isCodeSent)
+@if (isLoading)
 {
-    <EditForm Model="emailModel" OnValidSubmit="SendCodeAsync">
-        <DataAnnotationsValidator />
-        <ValidationSummary />
-
-        <div>
-            <label>Email:</label>
-            <InputText @bind-Value="emailModel.Email" class="form-control" />
-        </div>
-        <button type="submit" class="btn btn-primary mt-2">Send code</button>
-    </EditForm>
-    @if (!string.IsNullOrEmpty(message))
+    <p>Loading...</p>
+}
+else if (authState?.User?.Identity?.IsAuthenticated ?? false)
+{
+    if (loadRolesError)
     {
-        <div class="alert alert-info mt-2">@message</div>
+        <div style="color: red">Failed to load user roles.</div>
     }
+    <h5>User Roles:</h5>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Role Name</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var role in userRoles)
+            {
+                <tr>
+                    <td>@role</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+    <button @onclick="LogoutAllDevices" class="btn btn-primary">Logoff All Devices</button>
+    <button @onclick="LogoutThisDevice" class="btn btn-secondary">Logoff only this browser</button>
 }
 else
 {
-    <EditForm Model="codeModel" OnValidSubmit="VerifyCodeAsync">
-        <DataAnnotationsValidator />
-        <ValidationSummary />
-
-        <div>
-            <label>Enter code:</label>
-            <InputText @bind-Value="codeModel.Code" class="form-control" />
+    <EditForm Model="emailModel" OnValidSubmit="SendCodeAsync">
+        <div class="mb-2">
+            <InputText @bind-Value="emailModel.Email" placeholder="Enter your email" class="form-control" />
         </div>
-        <button type="submit" class="btn btn-success mt-2">Sign in</button>
+        <button type="submit" class="btn btn-primary">Send code</button>
     </EditForm>
-    @if (!string.IsNullOrEmpty(message))
+    @if (codeSent)
     {
-        <div class="alert alert-info mt-2">@message</div>
+        <EditForm Model="codeModel" OnValidSubmit="VerifyCodeAsync">
+            <div class="mb-2">
+                <InputText @bind-Value="codeModel.Code" placeholder="Enter code" class="form-control" />
+            </div>
+            <button type="submit" class="btn btn-success">Sign in</button>
+        </EditForm>
     }
+    <div style="color: green">@message</div>
 }
 
 @code {
+    private AuthenticationState? authState;
+    private bool isLoading = true;
+    private List<string> userRoles = new();
+
     private EmailModel emailModel = new();
     private CodeModel codeModel = new();
     private string? message;
-    private bool isCodeSent = false;
+    private bool codeSent = false;
+    private bool loadRolesError = false;
 
-    private class EmailModel
+    protected override async Task OnInitializedAsync()
     {
-        [Required]
-        [EmailAddress]
-        public string Email { get; set; } = "";
+        await RefreshAuthStateAsync();
     }
 
-    private class CodeModel
+private async Task RefreshAuthStateAsync()
+{
+    isLoading = true;
+    loadRolesError = false;
+    authState = await AuthStateProvider.GetAuthenticationStateAsync();
+
+    if (authState.User.Identity?.IsAuthenticated ?? false)
     {
-        [Required]
-        public string Code { get; set; } = "";
+        try
+        {
+            userRoles = await GetUserRolesService.GetUserRoles();
+        }
+        catch (Exception ex)
+        {
+            userRoles.Clear();
+            loadRolesError = true;
+        }
     }
+    isLoading = false;
+    StateHasChanged();
+}
 
     private async Task SendCodeAsync()
     {
@@ -64,12 +105,12 @@ else
         var result = await AuthService.SendCodeAsync(emailModel.Email);
         if (result)
         {
+            codeSent = true;
             message = "Verification code sent to your email.";
-            isCodeSent = true;
         }
         else
         {
-            message = "Failed to send code. Please try again.";
+            message = "Failed to send verification code.";
         }
     }
 
@@ -77,14 +118,64 @@ else
     {
         message = null;
         var authResult = await AuthService.VerifyCodeAsync(emailModel.Email, codeModel.Code);
-        if (authResult != null)
+        if (authResult != null && !string.IsNullOrWhiteSpace(authResult.Token))
         {
+            // Save token to localStorage
+            await JS.InvokeVoidAsync("localStorage.setItem", "authToken", authResult.Token);
+
+            // Notify authentication provider
+            if (AuthStateProvider is CustomAuthenticationStateProvider customProvider)
+            {
+                await customProvider.MarkUserAsAuthenticated(authResult.Token);
+            }
+
             message = $"Sign in success. Welcome, {authResult.Email}";
-            // Тут можно добавить редирект на защищённую страницу или обновить AuthState
+            codeSent = false;
+            emailModel = new();
+            codeModel = new();
+
+            await RefreshAuthStateAsync();
         }
         else
         {
             message = "Incorrect code or code expired.";
         }
+    }
+
+private async Task LogoutAllDevices()
+{
+    try
+    {
+        await AuthService.LogoutAllDevicesAsync();
+        message = "All devices logged off.";
+    }
+    catch (HttpRequestException ex)
+    {
+        // покажем реальный статус/сообщение сервера
+        message = $"Failed to log off all devices: {ex.Message}";
+    }
+
+    await JS.InvokeVoidAsync("localStorage.removeItem", "authToken");
+    if (AuthStateProvider is CustomAuthenticationStateProvider custom)
+        await custom.MarkUserAsLoggedOut();
+
+    Navigation.NavigateTo("/", true);
+}
+
+    private async Task LogoutThisDevice()
+    {
+        await JS.InvokeVoidAsync("localStorage.removeItem", "authToken");
+        if (AuthStateProvider is CustomAuthenticationStateProvider customProvider)
+            await customProvider.MarkUserAsLoggedOut();
+        Navigation.NavigateTo("/", true);
+    }
+
+    public class EmailModel
+    {
+        public string? Email { get; set; }
+    }
+    public class CodeModel
+    {
+        public string? Code { get; set; }
     }
 }
